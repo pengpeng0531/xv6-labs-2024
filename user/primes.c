@@ -1,12 +1,11 @@
-#include"kernel/types.h"
-#include"user/user.h"
+#include "kernel/types.h"
+#include "user/user.h"
 #define RD 0
 #define WR 1
-
 //1.将初始数据输入到管道中
 //2.读取第一个数据，进行数据筛选
 //3.将不能被第一个数据整除的数据写入右邻居的管道中
-//此时右管道的输出数据为输入数据
+//此时右管道的输出数据为输入
 
 const uint INT_LEN = sizeof(int);
 /**
