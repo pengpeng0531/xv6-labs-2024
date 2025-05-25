@@ -8,7 +8,7 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
-
+#include "proc.h"
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -17,6 +17,7 @@ extern char end[]; // first address after kernel.
 struct run {
   struct run *next;
 };
+
 
 struct {
   struct spinlock lock;
@@ -79,4 +80,19 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+// get the amount of free memory
+
+uint64
+get_freemem(void)
+{
+  struct run *r;
+  uint64 freemem = 0;
+
+  acquire(&kmem.lock);
+  for (r = kmem.freelist; r; r = r->next) {
+    freemem += PGSIZE;
+  }
+  release(&kmem.lock);
+  return freemem;
 }
