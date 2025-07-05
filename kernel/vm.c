@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -47,12 +48,53 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+// Initialize a process's kernel page table.
+pagetable_t
+proc_kpt_init()
+{
+  pagetable_t kernel_pagetable1;
+  kernel_pagetable1 = (pagetable_t) kalloc();
+  memset(kernel_pagetable, 0, PGSIZE);
+
+  // uart registers
+  kvmmap(UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap(KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap((uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kernel_pagetable1;
+}
+
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
+
 void
 kvminithart()
 {
   w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
+}
+// Store kernel page table to SATP register
+void
+proc_inithart(pagetable_t kpt){
+  w_satp(MAKE_SATP(kpt));
   sfence_vma();
 }
 
@@ -132,7 +174,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -439,4 +481,54 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+int
+vmprint_rec(pagetable_t pagetable,int level){
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)){
+      // 打印缩进
+      for(int l = 0; l < level; l++) {
+        if(l)printf(" ");
+        printf("..");
+      }
+      uint64 pa = PTE2PA(pte);   //下一级的页号
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        vmprint_rec((pagetable_t)pa,level + 1);
+      } 
+    }
+  }
+  return 0;
+}
+int
+vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  return vmprint_rec(pagetable, 1);
+}
+
+
+
+// add a mapping to the kernel page table.
+// only used when booting.
+// does not flush TLB or enable paging.
+void
+uvmmap(pagetable_t pagetable_t,uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable_t, va, sz, pa, perm) != 0)
+    panic("uvmmap");
+}
+pagetable_t
+pro_kpt_init(){
+  pagetable_t kernel_pt = uvmcreate();
+  if(kernel_pt == 0)
+    panic("pro_kpt_init: uvmcreate failed");
+  uvmmap(kernel_pt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kernel_pt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kernel_pt, CLINT, CLINT, 0x10000, PTE_R | PTE_W);  
+  uvmmap(kernel_pt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  uvmmap(kernel_pt, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  uvmmap(kernel_pt, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  uvmmap(kernel_pt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return kernel_pt;
 }

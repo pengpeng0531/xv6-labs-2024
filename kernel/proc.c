@@ -20,6 +20,7 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern pagetable_t kernel_pagetable; // kernel page table, used by the kernel and
 
 // initialize the proc table at boot time.
 void
@@ -105,6 +106,7 @@ allocproc(void)
   return 0;
 
 found:
+  //Allocate a pid.
   p->pid = allocpid();
 
   // Allocate a trapframe page.
@@ -121,13 +123,31 @@ found:
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
-  memset(&p->context, 0, sizeof(p->context));
-  p->context.ra = (uint64)forkret;
-  p->context.sp = p->kstack + PGSIZE;
+  //Initialize the kernel page table.
+  p->kernel_pagetable = proc_kpt_init();
+  if(p->kernel_pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
 
-  return p;
+// Allocate a page for the process's kernel stack.
+// Map it high in memory, followed by an invalid
+// guard page.
+char *pa = kalloc();
+if(pa == 0)
+  panic("kalloc");
+uint64 va = KSTACK((int) (p - proc));
+kvmmap(va, (uint64)pa,  PGSIZE, PTE_R | PTE_W);
+p->kstack = va;
+
+// Set up new context to start executing at forkret,
+// which returns to user space.
+memset(&p->context, 0, sizeof(p->context));
+p->context.ra = (uint64)forkret;
+p->context.sp = p->kstack + PGSIZE;
+
+return p;
 }
 
 // free a proc structure and the data hanging from it,
@@ -140,7 +160,7 @@ freeproc(struct proc *p)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
   if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+    proc_freepagetable(p->pagetable,p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -150,6 +170,10 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  uvmunmap(p->kernel_pagetable, p->kstack, 1, 0);
+  p->kstack = 0;
+  p->kernel_pagetable = 0;
 }
 
 // Create a user page table for a given process,
@@ -185,8 +209,24 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
-// Free a process's page table, and free the
-// physical memory it refers to.
+void
+proc_freekpgt(pagetable_t kernelpt)
+{
+  // similar to the freewalk method
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kernelpt[i];
+    if(pte & PTE_V){
+      kernelpt[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekpgt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
+}
+
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
@@ -194,6 +234,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
+
 
 // a user program that calls exec("/init")
 // od -t xC initcode
@@ -475,6 +516,10 @@ scheduler(void)
         c->proc = p;
         swtch(&c->context, &p->context);
 
+        // Come back to the global kernel page table
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+        sfence_vma();
+
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -485,6 +530,9 @@ scheduler(void)
     }
 #if !defined (LAB_FS)
     if(found == 0) {
+      // 没有进程运行时，使用全局kernel_pagetable
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();
       intr_on();
       asm volatile("wfi");
     }
@@ -696,4 +744,21 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+void
+proc_freekernelpt(pagetable_t kernelpt)
+{
+  // similar to the freewalk method
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kernelpt[i];
+    if(pte & PTE_V){
+      kernelpt[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }

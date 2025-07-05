@@ -91,7 +91,8 @@ void            exit(int);
 int             fork(void);
 int             growproc(int);
 pagetable_t     proc_pagetable(struct proc *);
-void            proc_freepagetable(pagetable_t, uint64);
+void            proc_freepagetable(pagetable_t , uint64);
+void            proc_freekpgt(pagetable_t);
 int             kill(int);
 struct cpu*     mycpu(void);
 struct cpu*     getmycpu(void);
@@ -159,6 +160,10 @@ int             uartgetc(void);
 
 // vm.c
 void            kvminit(void);
+void            kvminithart(void); 
+pagetable_t     proc_kpt_init(void);//为每个进程分配内核页表
+
+void            kvminit(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
@@ -178,7 +183,7 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
-
+int             vmprint(pagetable_t);
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);
