@@ -77,7 +77,17 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->zyx_alarm_interval!=0&&--p->zyx_alarm_ticks<=0&&p->zyx_alarm_goingoff==0){
+      //是否设置了时钟&&时钟计时是否结束&&没有其他时钟正在运行
+      //如果一个时钟到期的时候已经有一个时钟处理函数正在执行
+      //则会推迟到原处理函数运行完成后的下一个tick出发这次时钟
+      p->zyx_alarm_ticks = p->zyx_alarm_interval;
+      *p->zyx_alarm_trapframe = *p->trapframe; //保存当前trapframe
+      p->trapframe->epc = (uint64)p->zyx_alarm_handler; //设置trapframe的epc为时钟处理函数
+      p->zyx_alarm_goingoff = 1; //标记当前已有时钟正在运行
+    }
+  }
     yield();
 
   usertrapret();
@@ -216,5 +226,20 @@ devintr()
   } else {
     return 0;
   }
+}
+//设置时钟进程相关属性
+int zyx_sigalarm(int ticks,void(*handler)()){
+  struct  proc*p = myproc();
+  p->zyx_alarm_interval = ticks;
+  p->zyx_alarm_handler = handler;
+  p->zyx_alarm_ticks = ticks;
+  return 0;
+}
+//将进程恢复到alarm中断前的状态
+int zyx_sigreturn(){
+  struct proc*p = myproc();
+  *p->trapframe = *p->zyx_alarm_trapframe;
+  p->zyx_alarm_goingoff = 0;
+  return 0;
 }
 
