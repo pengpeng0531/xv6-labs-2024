@@ -154,6 +154,9 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+int             zyx_uvmshouldallocate(uint64 va);//判断页面是否是惰性分配的地址，是的话返回1
+void            zyx_uvmlazyallocate(uint64 va);//给惰性分配的页面分配并映射物理地址
+pte_t *         walk(pagetable_t pagetable, uint64 va, int alloc);
 void            kvminit(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);

@@ -67,12 +67,17 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+  }else{
+    uint64 fault_va = r_stval();   //出错的虚拟地址
+    if((r_scause()==13||r_scause()==15 )&&zyx_uvmshouldallocate(fault_va)){
+      zyx_uvmlazyallocate(fault_va);
+    
+    }else{//如果不是缺页异常或者在非惰性分配地址上发生缺页异常，抛出错误，终止程序
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
-
   if(p->killed)
     exit(-1);
 
