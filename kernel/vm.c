@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -298,6 +299,74 @@ uvmfree(pagetable_t pagetable, uint64 sz)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
 }
+//检查虚拟地址是否是之前惰性分配的地址，是返回1
+int zyx_uvmshouldallocate(uint64 va){
+  pte_t* pte;
+  struct proc*p = myproc();
+  return va<PGROUNDUP(p->sz)&&PGROUNDDOWN(va)!=r_sp()
+          &&(pte = walk(p->pagetable, va, 0))!=0
+          &&(*pte&PTE_V)!=0;//页表项不存在
+
+}
+int zyx_lazyallocate(uint64 va){
+  struct proc* p = myproc();
+  char* pa = kalloc();
+  if(pa==0){
+    printf("zyx_lazyallocate: kalloc failed\n");
+    p->killed = 1;
+    return -1;
+  }
+  else{
+    memset(pa,0,PGSIZE);
+    if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, PTE_R|PTE_W|PTE_U|PTE_X)!=0){
+      printf("zyx_lazyallocate: mappages failed\n");
+      kfree(pa);
+      p->killed = 1;
+      return -1;
+    }
+    return 0;
+  }
+
+  
+}
+//检查虚拟地址所在的页是否是cow页
+int zyx_uvmcheckcow(uint64 va)
+{
+  pte_t *pte;
+  struct proc* p = myproc();
+  pte = walk(p->pagetable, va, 0);
+  
+  return (va<p->sz)//地址在有效范围内
+        && (pte!=0)//页表项存在
+        &&(*pte&PTE_V) //地址有效
+        &&((*pte & PTE_COW) != 0);//是cow页
+}
+//写时复制页分配
+int zyx_uvmcowcopy(uint64 va)
+{
+  pte_t *pte;
+  struct proc* p = myproc();
+  uint64 pa;
+  //char *mem;
+  pte = walk(p->pagetable, va, 0);
+  if(pte == 0)
+    panic("cowcopy: pte should exist");
+  pa = PTE2PA(*pte);
+
+  uint64 new = (uint64)zyx_kcopy_n_deref((void*)pa);//获取新分配的物理页（如果原本的物理页引用数位1，则获取到的还是原本的物理页）
+
+  if(new == 0)//内存不足
+    return -1;
+  //修改新的映射，恢复写权限，清除COW标志
+  uint64 flags = (PTE_FLAGS(*pte) |PTE_W)&~PTE_COW;
+  uvmunmap(p->pagetable,PGROUNDDOWN(va),1,0);//清除原来的映射
+  
+  //将新分配的物理页映射到当前进程的页表中
+  if(mappages(p->pagetable,va,1,new,flags)==-1){
+    panic("uvmcowcopy:mappages");
+  }
+  return 0;
+}
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.
@@ -311,25 +380,39 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
-
+  // char *mem;
+  //执行写时复制页
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    pte = walk(old, i, 0);
+    
+
+    // char*mem = 0;
+    // if(zyx_uvmshouldallocate(i)){//执行懒分配
+    //   if((mem = kalloc()) == 0)
+    //     goto err;
+    //   memmove(mem, (char*)pa, PGSIZE);
+    //   if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //     kfree(mem);
+    //     goto err;
+    //   }
+    // }else{//执行懒时复制页
+      if((pte = walk(old, i, 0)) == 0)
+        panic("uvmcopy: pte should exist");
+      pa = PTE2PA(*pte);
+      if((*pte & PTE_V) == 0)
+        panic("uvmcopy: page not present");
+      //清除父进程所有PTE中的PTE_W位，设置PTE_COW位表示所在的页是一个写时复制页（多个进程引用同一个页面）
+      if(*pte&PTE_W){//页面本身为只读,不设置cow位
+        *pte = (*pte&~PTE_W)|PTE_COW;
+      }
+      flags = PTE_FLAGS(*pte);
+      //将父进程映射的物理页地址映射到子进程的页表中，权限保持和父进程一致
+      if(mappages(new,i,PGSIZE,(uint64)pa,flags) != 0)
+        goto err;
+      zyx_krefpage((void*)pa);//增加物理页引用计数
+    // }
   }
   return 0;
-
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
@@ -357,6 +440,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
 
   while(len > 0){
+    //检查每个页是否是COW页
+    if(zyx_uvmcheckcow(dstva)){
+      zyx_uvmcowcopy(dstva);
+    }
+    // if(zyx_uvmshouldallocate(dstva)){
+    //   zyx_lazyallocate(dstva);
+    // }
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
@@ -380,10 +470,13 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  // if(zyx_uvmshouldallocate(srcva)){
+  //   zyx_lazyallocate(srcva);
+  // }
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
+
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);

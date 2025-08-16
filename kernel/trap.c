@@ -67,7 +67,21 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if((r_scause()==13||r_scause()==15)){
+    //发生页面错误，并且是写时赋值机制导致的页面不可写
+    if((zyx_uvmcheckcow(r_stval()))){
+      if(zyx_uvmcowcopy(r_stval())==-1){
+        p->killed = 1;
+      }
+    }
+    // else if(zyx_uvmshouldallocate(r_stval())) {
+    //   //缺页异常
+    //   if(zyx_lazyallocate((uint64)r_stval())==-1){
+    //     p->killed = 1;
+    //   }
+    // }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

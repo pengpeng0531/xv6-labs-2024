@@ -63,6 +63,8 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void*           zyx_kcopy_n_deref(void*pa);
+void            zyx_krefpage(void *pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -163,6 +165,10 @@ pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
+int             zyx_uvmshouldallocate(uint64 va);
+int            zyx_lazyallocate(uint64 va);
+int             zyx_uvmcowcopy(uint64 va);
+int             zyx_uvmcheckcow(uint64 va);
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
